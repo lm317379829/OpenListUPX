@@ -1,0 +1,64 @@
+name: OpenList UPX
+
+on:
+  push: # push 时触发, 主要是为了测试配置有没有问题
+  schedule:
+    - cron: '05 1 * * *' # 每天1:05触发
+  workflow_dispatch:
+    inputs:
+      ssh:
+        description: 'SSH Connection to Actions'
+        required: false
+        default: 'false'
+        
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: SSH Connection to Actions
+        uses: P3TERX/ssh2actions@v1.0.0
+        if: (github.event.inputs.ssh == 'true' && github.event.inputs.ssh != 'false') || contains(github.event.action, 'ssh')
+
+      - name: HandleUPX
+        run: |
+          set +e
+          remortVer=$(wget -qO- --no-check-certificate https://api.github.com/repos/OpenListTeam/openList/releases/latest | jq '.tag_name' | sed s/v//g | sed s/\"//g)
+          localVer=$(cat version)
+          if [ -n "$remortVer" ] && [ "$remortVer" != "$localVer" ]; then
+            echo [$LOGTIME] 发现 Openlist 新版本 v$remortVer
+            wget --no-check-certificate -qO- "https://github.com/OpenListTeam/openList/releases/download/v$remortVer/openlist-linux-musl-amd64.tar.gz" -O 'openlist.tar.gz'
+            mkdir -p tmp/openlist/
+            tarinfo=$(tar -xzvf openlist.tar.gz -C tmp/openlist/)
+            if [ -e tmp/openlist/openlist ] && ! echo "$tarinfo" | grep -iq "erro"; then
+              upx --best --lzma -9 -o openlist-upx tmp/openlist/openlist
+              echo remortVer > version
+              git config --global user.email 'action@github.com'
+              git config --global user.name ${{ github.actor }}
+              git add version
+              git add openlist-upx
+              # 检查是否有文件被修改
+              if git diff --staged --quiet; then
+                echo -e ".config文件未被修改。"
+                exit 0
+              else
+                git commit -m "Update files"
+                git push
+                echo -e "上传文件文件成功。"
+              fi
+            fi
+          fi
+          
+      - name: "Delete Releases and Workflows Runs"
+        uses: ophub/delete-releases-workflows@main
+        with:
+          delete_releases: true
+          releases_keep_latest: 3
+          delete_workflows: true
+          workflows_keep_day: 3
+          gh_token: ${{ secrets.GITHUB_TOKEN }}
